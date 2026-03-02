@@ -58,8 +58,9 @@ ctx.Tabs = {
     Main     = Window:AddTab({ Title = "Main",     Icon = "home" }),
     Visual   = Window:AddTab({ Title = "Visual",   Icon = "eye" }),
     Movement = Window:AddTab({ Title = "Movement", Icon = "move" }),
+    Collect  = Window:AddTab({ Title = "Collect",  Icon = "package" }),
     PnB      = Window:AddTab({ Title = "PnB",      Icon = "hammer" }),
-    Harvest  = Window:AddTab({ Title = "Harvest",   Icon = "axe" }),
+    Harvest  = Window:AddTab({ Title = "Harvest",  Icon = "axe" }),
     Plant    = Window:AddTab({ Title = "Plant",    Icon = "sprout" }),
     Clear    = Window:AddTab({ Title = "Clear",    Icon = "trash-2" }),
     Misc     = Window:AddTab({ Title = "Misc",     Icon = "wrench" }),
@@ -102,7 +103,8 @@ end
 loadModule("fly")(ctx)           -- A* pathfinding & fly system
 loadModule("tab_main")(ctx)      -- Tab Main
 loadModule("tab_visual")(ctx)    -- Tab Visual
-loadModule("tab_movement")(ctx)  -- Tab Movement (fly UI, auto collect)
+loadModule("tab_movement")(ctx)  -- Tab Movement (fly UI)
+loadModule("tab_collect")(ctx)   -- Tab Collect (auto collect items)
 loadModule("tab_pnb")(ctx)       -- Tab PnB (put & break)
 loadModule("tab_harvest")(ctx)   -- Tab Harvest
 loadModule("tab_plant")(ctx)     -- Tab Plant
