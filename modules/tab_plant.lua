@@ -1,9 +1,8 @@
 -- ================================================
---   Tab Plant — Auto Plant Saplings (FIXED v2)
+--   Tab Plant — Auto Plant Saplings (DEBUG VERSION)
 --
---   Fix: Removed separate plantFlyTo() system.
---   Now uses startFly/stopFly from fly module
---   (same as Auto Collect which works perfectly).
+--   TEMPORARY: Has debug prints to diagnose tile selection.
+--   Remove prints after confirming fix works.
 -- ================================================
 
 local function init(ctx)
@@ -26,7 +25,6 @@ local function init(ctx)
 
     -- ══════════════════════════════════════════════════════════════
     -- FLY TO TILE — reuses fly module (same as Auto Collect)
-    -- Calls startFly() then waits for fly to finish via getFlyConn()
     -- ══════════════════════════════════════════════════════════════
 
     local function flyToAndWait(tx, ty)
@@ -35,7 +33,6 @@ local function init(ctx)
 
         startFly(tx, ty)
 
-        -- Wait for fly to complete (same pattern as Auto Collect)
         local done = false
         local checkConn
         checkConn = RS.Heartbeat:Connect(function()
@@ -45,7 +42,6 @@ local function init(ctx)
             end
         end)
 
-        -- Timeout safety
         local elapsed = 0
         while not done and plantActive do
             task.wait(0.1)
@@ -61,7 +57,7 @@ local function init(ctx)
     end
 
     -- ══════════════════════════════════════════════════════════════
-    -- INVENTORY SCAN — find sapling items
+    -- INVENTORY SCAN
     -- ══════════════════════════════════════════════════════════════
 
     local function getSaplingItems()
@@ -80,20 +76,12 @@ local function init(ctx)
     end
 
     -- ══════════════════════════════════════════════════════════════
-    -- TILE SCAN — find plantable tiles (empty above solid ground)
-    --
-    -- A tile is plantable if:
-    --   1. Layer 1 at (x, y) is empty (no tile there)
-    --   2. Layer 1 at (x, y-1) has a solid tile (ground below)
-    --      This prevents planting in mid-air or underground
-    --
-    -- Scans in zigzag pattern for efficient pathfinding travel
+    -- TILE SCAN — with DEBUG PRINTS
     -- ══════════════════════════════════════════════════════════════
 
     local function isSolidTile(x, y)
         local tileId = WorldManager.GetTile(x, y, 1)
         if not tileId then return false end
-        -- Saplings are not solid ground
         if type(tileId) == "string" and tileId:sub(-8) == "_sapling" then
             return false
         end
@@ -103,7 +91,6 @@ local function init(ctx)
     local function getPlantableTiles()
         local tiles = {}
 
-        -- Collect all X,Y where tiles exist to determine world bounds
         local minX, maxX = math.huge, -math.huge
         local minY, maxY = math.huge, -math.huge
         for x, col in pairs(WorldTiles) do
@@ -121,27 +108,39 @@ local function init(ctx)
 
         if minX == math.huge then return tiles end
 
-        -- Only check y+1 above existing tiles (where saplings can go)
-        -- maxY+1 is the highest possible planting row
+        -- DEBUG: print world bounds
+        print("[Plant DEBUG] World bounds: X=" .. minX .. ".." .. maxX .. " Y=" .. minY .. ".." .. maxY)
+
         local plantMaxY = maxY + 1
 
         local goingRight = true
         for y = plantMaxY, minY, -1 do
             if goingRight then
                 for x = minX, maxX do
-                    -- Empty at this position AND solid ground below
-                    if not WorldManager.GetTile(x, y, 1) and isSolidTile(x, y - 1) then
+                    local isEmpty = not WorldManager.GetTile(x, y, 1)
+                    local hasSolidBelow = isSolidTile(x, y - 1)
+                    if isEmpty and hasSolidBelow then
                         table.insert(tiles, { x = x, y = y })
                     end
                 end
             else
                 for x = maxX, minX, -1 do
-                    if not WorldManager.GetTile(x, y, 1) and isSolidTile(x, y - 1) then
+                    local isEmpty = not WorldManager.GetTile(x, y, 1)
+                    local hasSolidBelow = isSolidTile(x, y - 1)
+                    if isEmpty and hasSolidBelow then
                         table.insert(tiles, { x = x, y = y })
                     end
                 end
             end
             goingRight = not goingRight
+        end
+
+        -- DEBUG: print first 10 tiles selected
+        print("[Plant DEBUG] Found " .. #tiles .. " plantable tiles")
+        for i = 1, math.min(10, #tiles) do
+            local t = tiles[i]
+            local below = WorldManager.GetTile(t.x, t.y - 1, 1)
+            print("[Plant DEBUG] Tile #" .. i .. ": (" .. t.x .. ", " .. t.y .. ") below=" .. tostring(below))
         end
 
         return tiles
@@ -176,6 +175,9 @@ local function init(ctx)
                 for _, tile in ipairs(tiles) do
                     if not plantActive then break end
 
+                    -- DEBUG: print which tile we're flying to
+                    print("[Plant DEBUG] Flying to (" .. tile.x .. ", " .. tile.y .. ")")
+
                     stackIdx = findStack(saplingId)
                     if not stackIdx then
                         Fluent:Notify({ Title = "Auto Plant", Content = "Sapling habis!", Duration = 3 })
@@ -183,7 +185,6 @@ local function init(ctx)
                         break
                     end
 
-                    -- Skip if tile got filled while we were moving
                     if WorldManager.GetTile(tile.x, tile.y, 1) then
                         continue
                     end
@@ -196,7 +197,6 @@ local function init(ctx)
                         continue
                     end
 
-                    -- Re-check after arriving
                     stackIdx = findStack(saplingId)
                     if stackIdx and not WorldManager.GetTile(tile.x, tile.y, 1) then
                         RemotePlace:FireServer(Vector2.new(tile.x, tile.y), stackIdx)
@@ -230,7 +230,7 @@ local function init(ctx)
 
     Tabs.Plant:AddParagraph({
         Title   = "Auto Plant",
-        Content = "Otomatis tanam sapling di semua tile kosong.\nPola zigzag: kiri→kanan, kanan→kiri per row.",
+        Content = "Otomatis tanam sapling di semua tile kosong di atas permukaan.\nPola zigzag: kiri→kanan, kanan→kiri per row.",
     })
 
     local plantDropdown = Tabs.Plant:AddDropdown("PlantSapling", {
@@ -251,6 +251,16 @@ local function init(ctx)
             else
                 Fluent:Notify({ Title = "Plant", Content = "Tidak ada sapling di inventory!", Duration = 2 })
             end
+        end,
+    })
+
+    -- DEBUG: button to test tile scan without planting
+    Tabs.Plant:AddButton({
+        Title       = "DEBUG: Scan Tiles",
+        Description = "Print plantable tiles ke console (F9)",
+        Callback    = function()
+            local tiles = getPlantableTiles()
+            Fluent:Notify({ Title = "Debug", Content = #tiles .. " tiles found. Check F9 console.", Duration = 5 })
         end,
     })
 
