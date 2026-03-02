@@ -1,0 +1,6 @@
+# Hanya push file script utama, ignore sisanya
+ExperienceScript/
+LinoriaLib-main/
+scripts_*.txt
+skill.md
+.luaurc
