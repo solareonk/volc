@@ -101,6 +101,11 @@ local function init(ctx)
                             continue
                         end
 
+                        -- Skip walkable foreground tiles (doors, platforms, saplings)
+                        if fg and ctx.isTileWalkable(x, y) and not bg then
+                            continue
+                        end
+
                         if fg or bg then
                             if x < minX then minX = x end
                             if x > maxX then maxX = x end
@@ -123,6 +128,13 @@ local function init(ctx)
 
                 if fg and type(fg) == "string" and fg:lower():find("bedrock") then
                     continue
+                end
+
+                -- Skip walkable tiles (doors, platforms, saplings)
+                -- These are not solid blocks that need clearing
+                if fg and ctx.isTileWalkable(x, y) then
+                    -- Only skip if there's no background to clear either
+                    if not bg then continue end
                 end
 
                 if fg or bg then
