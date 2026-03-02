@@ -12,10 +12,9 @@ local function init(ctx)
     local ItemsManager = ctx.ItemsManager
     local RemoteFist   = ctx.RemoteFist
 
-    local playerTile          = ctx.playerTile
-    local startFly            = ctx.startFly
-    local stopFly             = ctx.stopFly
-    local getUncollectedItems = ctx.getUncollectedItems
+    local playerTile = ctx.playerTile
+    local startFly   = ctx.startFly
+    local stopFly    = ctx.stopFly
 
     local harvestActive = false
     local harvestFilter = "All"
@@ -52,10 +51,11 @@ local function init(ctx)
         return list
     end
 
-    -- Scan WorldTiles untuk sapling yang sudah ready (dengan filter)
+    -- Scan WorldTiles untuk sapling yang sudah ready
+    -- Sorted snake zigzag: atas ke bawah, kiri↔kanan per row
     local function getReadySaplings()
-        local saplings = {}
         local now = workspace:GetServerTimeNow()
+        local rowSaplings = {} -- [y] = { {sapling}, ... }
 
         for x, col in pairs(WorldTiles) do
             if type(col) == "table" then
@@ -72,7 +72,12 @@ local function init(ctx)
 
                             if harvestFilter == "All" or name == harvestFilter then
                                 if elapsed >= growTime then
-                                    table.insert(saplings, { x = x, y = y, name = name, tileId = tileId })
+                                    if not rowSaplings[y] then
+                                        rowSaplings[y] = {}
+                                    end
+                                    table.insert(rowSaplings[y], {
+                                        x = x, y = y, name = name, tileId = tileId
+                                    })
                                 end
                             end
                         end
@@ -81,12 +86,32 @@ local function init(ctx)
             end
         end
 
-        local px, py = playerTile()
-        table.sort(saplings, function(a, b)
-            local da = math.abs(a.x - px) + math.abs(a.y - py)
-            local db = math.abs(b.x - px) + math.abs(b.y - py)
-            return da < db
-        end)
+        -- Sort each row by X (left to right)
+        for _, row in pairs(rowSaplings) do
+            table.sort(row, function(a, b) return a.x < b.x end)
+        end
+
+        -- Get sorted Y values (highest first = top to bottom)
+        local sortedYs = {}
+        for y in pairs(rowSaplings) do
+            table.insert(sortedYs, y)
+        end
+        table.sort(sortedYs, function(a, b) return a > b end)
+
+        -- Snake zigzag: odd rows left→right, even rows right→left
+        local saplings = {}
+        for i, y in ipairs(sortedYs) do
+            local row = rowSaplings[y]
+            if i % 2 == 0 then
+                for j = #row, 1, -1 do
+                    table.insert(saplings, row[j])
+                end
+            else
+                for _, sap in ipairs(row) do
+                    table.insert(saplings, sap)
+                end
+            end
+        end
 
         return saplings
     end
@@ -111,11 +136,13 @@ local function init(ctx)
                 for _, sap in ipairs(saplings) do
                     if not harvestActive then break end
 
+                    -- Fly to tree
                     startFly(sap.x, sap.y)
                     while ctx.getFlyConn() and harvestActive do task.wait(0.1) end
                     if not harvestActive then break end
                     task.wait(0.2)
 
+                    -- Punch tree until broken
                     RemoteFist:FireServer(Vector2.new(sap.x, sap.y))
                     task.wait(0.2)
 
@@ -126,20 +153,7 @@ local function init(ctx)
                         task.wait(0.16)
                     end
 
-                    task.wait(0.3)
-                    local items = getUncollectedItems()
-                    for _, item in ipairs(items) do
-                        if not harvestActive then break end
-                        if item.part and item.part.Parent and not item.part:GetAttribute("t") then
-                            local ix = math.floor(item.part.Position.X / 4.5 + 0.5)
-                            local iy = math.floor(item.part.Position.Y / 4.5 + 0.5)
-                            if math.abs(ix - sap.x) <= 3 and math.abs(iy - sap.y) <= 3 then
-                                startFly(ix, iy)
-                                while ctx.getFlyConn() and harvestActive do task.wait(0.1) end
-                                task.wait(0.3)
-                            end
-                        end
-                    end
+                    task.wait(0.15)
                 end
 
                 if not harvestActive then break end
@@ -161,7 +175,7 @@ local function init(ctx)
 
     Tabs.Harvest:AddParagraph({
         Title   = "Auto Harvest",
-        Content = "Otomatis panen tree yang sudah ready. Fly langsung ke tile tree.",
+        Content = "Otomatis panen tree yang sudah ready.\nPola snake zigzag: atas ke bawah, kiri↔kanan per row.\nGunakan Auto Collect untuk mengambil drop.",
     })
 
     local harvestDropdown = Tabs.Harvest:AddDropdown("HarvestTree", {
