@@ -11,7 +11,6 @@ local function init(ctx)
     local Inventory    = ctx.Inventory
     local RemotePlace  = ctx.RemotePlace
 
-    local playerTile = ctx.playerTile
     local startFly   = ctx.startFly
     local stopFly    = ctx.stopFly
     local findStack  = ctx.findStack
@@ -34,31 +33,46 @@ local function init(ctx)
         return list
     end
 
-    -- Scan posisi di row player untuk tile yang bisa ditanami
+    -- Scan semua tile kosong di world, zigzag kiri↔kanan per row
     local function getPlantableTiles()
         local tiles = {}
-        local px, py = playerTile()
 
+        -- Hitung world bounds
         local minX, maxX = math.huge, -math.huge
+        local minY, maxY = math.huge, -math.huge
         for x, col in pairs(WorldTiles) do
             if type(col) == "table" then
                 if x < minX then minX = x end
                 if x > maxX then maxX = x end
+                for y in pairs(col) do
+                    if type(y) == "number" then
+                        if y < minY then minY = y end
+                        if y > maxY then maxY = y end
+                    end
+                end
             end
         end
 
         if minX == math.huge then return tiles end
 
-        for x = minX, maxX do
-            local tileId = WorldManager.GetTile(x, py, 1)
-            if not tileId then
-                table.insert(tiles, { x = x, y = py })
+        -- Zigzag: per row dari atas (maxY) ke bawah (minY)
+        local goingRight = true
+        for y = maxY, minY, -1 do
+            if goingRight then
+                for x = minX, maxX do
+                    if not WorldManager.GetTile(x, y, 1) then
+                        table.insert(tiles, { x = x, y = y })
+                    end
+                end
+            else
+                for x = maxX, minX, -1 do
+                    if not WorldManager.GetTile(x, y, 1) then
+                        table.insert(tiles, { x = x, y = y })
+                    end
+                end
             end
+            goingRight = not goingRight
         end
-
-        table.sort(tiles, function(a, b)
-            return math.abs(a.x - px) < math.abs(b.x - px)
-        end)
 
         return tiles
     end
@@ -126,7 +140,7 @@ local function init(ctx)
 
     Tabs.Plant:AddParagraph({
         Title   = "Auto Plant",
-        Content = "Otomatis tanam sapling di tile yang tidak ada block/sapling.",
+        Content = "Otomatis tanam sapling di semua tile kosong.\nPola zigzag: kiri→kanan, kanan→kiri per row.",
     })
 
     local plantDropdown = Tabs.Plant:AddDropdown("PlantSapling", {
