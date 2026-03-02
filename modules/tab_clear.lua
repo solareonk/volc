@@ -190,7 +190,22 @@ local function init(ctx)
                 Duration = 5,
             })
 
+            -- Fly to starting position: above top-left corner
+            local startX = bounds.minX
+            local startY = bounds.maxY + 1
+            Fluent:Notify({ Title = "Clear World", Content = "Fly ke posisi start (" .. startX .. ", " .. startY .. ")...", Duration = 2 })
+            local reached = flyToAndWait(startX, startY)
+            if not clearActive then return end
+            if not reached then
+                Fluent:Notify({ Title = "Clear World", Content = "Gagal ke posisi start!", Duration = 3 })
+                clearActive = false
+                if Options.ClearWorld then Options.ClearWorld:SetValue(false) end
+                return
+            end
+            task.wait(0.2)
+
             local cleared = 0
+            local lastTile = { x = startX, y = startY }
 
             for _, tile in ipairs(tiles) do
                 if not clearActive then break end
@@ -198,51 +213,48 @@ local function init(ctx)
                 local fg = WorldManager.GetTile(tile.x, tile.y, 1)
                 local bg = WorldManager.GetTile(tile.x, tile.y, 2)
 
-                -- Skip bedrock (re-check in case world changed)
                 if fg and type(fg) == "string" and fg:lower():find("bedrock") then
                     continue
                 end
 
-                -- Skip if already cleared
                 if not fg and not bg then continue end
 
-                -- Find adjacent walkable tile to stand on while punching
-                -- Priority: above > previous tile in snake direction > any adjacent
+                -- Find adjacent walkable tile based on context:
+                -- Prefer: above first (cleared area), then direction we came from
                 local adjTile = nil
                 local candidates = {
-                    { x = tile.x, y = tile.y + 1 },     -- above
-                    { x = tile.x - 1, y = tile.y },     -- left
-                    { x = tile.x + 1, y = tile.y },     -- right
-                    { x = tile.x, y = tile.y - 1 },     -- below
+                    { x = tile.x, y = tile.y + 1 },         -- above (already cleared)
+                    { x = lastTile.x, y = lastTile.y },     -- where we just were
+                    { x = tile.x - 1, y = tile.y },         -- left
+                    { x = tile.x + 1, y = tile.y },         -- right
+                    { x = tile.x, y = tile.y - 1 },         -- below
                 }
 
                 for _, c in ipairs(candidates) do
+                    -- Don't stand on the tile we're about to punch
+                    if c.x == tile.x and c.y == tile.y then continue end
                     if isTileWalkable(c.x, c.y) then
                         adjTile = c
                         break
                     end
                 end
 
-                if not adjTile then
-                    -- Can't reach this tile, skip
-                    continue
-                end
+                if not adjTile then continue end
 
-                -- Fly to adjacent tile
-                local reached = flyToAndWait(adjTile.x, adjTile.y)
+                reached = flyToAndWait(adjTile.x, adjTile.y)
                 if not clearActive then break end
                 if not reached then continue end
 
                 task.wait(0.05)
 
-                -- Punch the tile
                 clearPunchTile(tile.x, tile.y)
                 if not clearActive then break end
 
-                -- After clearing, move into the cleared tile if walkable
+                -- Move into cleared tile
                 if not WorldManager.GetTile(tile.x, tile.y, 1) then
                     flyToAndWait(tile.x, tile.y)
                     if not clearActive then break end
+                    lastTile = { x = tile.x, y = tile.y }
                     task.wait(0.05)
                 end
 
