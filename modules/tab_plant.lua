@@ -114,7 +114,7 @@ local function init(ctx)
 
     local function getPlantableTiles()
         local tiles = {}
-        debugLog = {}  -- reset log
+        debugLog = {}
 
         local minX, maxX = math.huge, -math.huge
         local minY, maxY = math.huge, -math.huge
@@ -137,29 +137,47 @@ local function init(ctx)
 
         local plantMaxY = maxY + 1
 
-        local goingRight = true
+        -- Step 1: Collect plantable tiles per row
+        local rowTiles = {}  -- [y] = { {x,y}, ... } sorted left-to-right
         for y = plantMaxY, minY, -1 do
-            if goingRight then
-                for x = minX, maxX do
-                    local isEmpty = not WorldManager.GetTile(x, y, 1)
-                    local hasSolidBelow = isSolidTile(x, y - 1)
-                    if isEmpty and hasSolidBelow then
-                        table.insert(tiles, { x = x, y = y })
+            for x = minX, maxX do
+                if not WorldManager.GetTile(x, y, 1) and isSolidTile(x, y - 1) then
+                    if not rowTiles[y] then
+                        rowTiles[y] = {}
                     end
-                end
-            else
-                for x = maxX, minX, -1 do
-                    local isEmpty = not WorldManager.GetTile(x, y, 1)
-                    local hasSolidBelow = isSolidTile(x, y - 1)
-                    if isEmpty and hasSolidBelow then
-                        table.insert(tiles, { x = x, y = y })
-                    end
+                    table.insert(rowTiles[y], { x = x, y = y })
                 end
             end
-            goingRight = not goingRight
         end
 
-        log("[Plant DEBUG] Found " .. #tiles .. " plantable tiles")
+        -- Step 2: Get sorted Y values (highest first = top to bottom)
+        local sortedYs = {}
+        for y in pairs(rowTiles) do
+            table.insert(sortedYs, y)
+        end
+        table.sort(sortedYs, function(a, b) return a > b end)
+
+        -- Step 3: Snake zigzag — alternate direction per row
+        -- Row 1 (top): left → right
+        -- Row 2: right → left
+        -- Row 3: left → right
+        -- etc.
+        for i, y in ipairs(sortedYs) do
+            local row = rowTiles[y]
+            if i % 2 == 0 then
+                -- Even row index: right → left (reverse)
+                for j = #row, 1, -1 do
+                    table.insert(tiles, row[j])
+                end
+            else
+                -- Odd row index: left → right (normal)
+                for _, tile in ipairs(row) do
+                    table.insert(tiles, tile)
+                end
+            end
+        end
+
+        log("[Plant DEBUG] Found " .. #tiles .. " plantable tiles across " .. #sortedYs .. " rows")
         log("[Plant DEBUG] Player tile: " .. table.concat({playerTile()}, ", "))
         for i = 1, math.min(20, #tiles) do
             local t = tiles[i]
