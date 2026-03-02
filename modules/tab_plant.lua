@@ -80,12 +80,30 @@ local function init(ctx)
     end
 
     -- ══════════════════════════════════════════════════════════════
-    -- TILE SCAN — zigzag pattern for plantable tiles
+    -- TILE SCAN — find plantable tiles (empty above solid ground)
+    --
+    -- A tile is plantable if:
+    --   1. Layer 1 at (x, y) is empty (no tile there)
+    --   2. Layer 1 at (x, y-1) has a solid tile (ground below)
+    --      This prevents planting in mid-air or underground
+    --
+    -- Scans in zigzag pattern for efficient pathfinding travel
     -- ══════════════════════════════════════════════════════════════
+
+    local function isSolidTile(x, y)
+        local tileId = WorldManager.GetTile(x, y, 1)
+        if not tileId then return false end
+        -- Saplings are not solid ground
+        if type(tileId) == "string" and tileId:sub(-8) == "_sapling" then
+            return false
+        end
+        return true
+    end
 
     local function getPlantableTiles()
         local tiles = {}
 
+        -- Collect all X,Y where tiles exist to determine world bounds
         local minX, maxX = math.huge, -math.huge
         local minY, maxY = math.huge, -math.huge
         for x, col in pairs(WorldTiles) do
@@ -103,17 +121,22 @@ local function init(ctx)
 
         if minX == math.huge then return tiles end
 
+        -- Only check y+1 above existing tiles (where saplings can go)
+        -- maxY+1 is the highest possible planting row
+        local plantMaxY = maxY + 1
+
         local goingRight = true
-        for y = maxY, minY, -1 do
+        for y = plantMaxY, minY, -1 do
             if goingRight then
                 for x = minX, maxX do
-                    if not WorldManager.GetTile(x, y, 1) then
+                    -- Empty at this position AND solid ground below
+                    if not WorldManager.GetTile(x, y, 1) and isSolidTile(x, y - 1) then
                         table.insert(tiles, { x = x, y = y })
                     end
                 end
             else
                 for x = maxX, minX, -1 do
-                    if not WorldManager.GetTile(x, y, 1) then
+                    if not WorldManager.GetTile(x, y, 1) and isSolidTile(x, y - 1) then
                         table.insert(tiles, { x = x, y = y })
                     end
                 end
