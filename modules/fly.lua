@@ -1,17 +1,12 @@
 -- ================================================
 --   Fly System with A* Pathfinding (FIXED)
---   
---   Fixes:
---   1. playerTile() now uses math.round (matches game engine)
---   2. Fly movement hooks into game's Tick system instead of Heartbeat
---   3. Proper physics bypass: override Position AFTER PhysicsUpdate
---   4. Neutralize gravity/friction every tick while flying
 -- ================================================
 
 local function init(ctx)
     local RS           = ctx.RS
     local PM           = ctx.PM
     local WorldManager = ctx.WorldManager
+    local ItemsManager = ctx.ItemsManager
     local Fluent       = ctx.Fluent
     local Options      = ctx.Options
 
@@ -21,9 +16,7 @@ local function init(ctx)
     local FLY_SPEED  = 1.2
 
     -- ══════════════════════════════════════════════════════════════
-    -- FIX #1: Coordinate conversion matching game engine
-    -- Game uses math.round(x / 4.5), NOT math.floor(x / 4.5 + 0.5)
-    -- They differ at exact halfway points (e.g. 2.25 → floor+0.5 gives 1, round gives 0)
+    -- COORDINATE CONVERSION
     -- ══════════════════════════════════════════════════════════════
 
     local function worldToTile(worldPos: number): number
@@ -39,21 +32,74 @@ local function init(ctx)
         return worldToTile(p.X), worldToTile(p.Y)
     end
 
+    -- ══════════════════════════════════════════════════════════════
+    -- TILE WALKABILITY
+    --
+    -- Collision types (from game engine):
+    --   0 = no collision (walkable)
+    --   1 = solid (blocked)
+    --   2 = platform (blocks from below only, walkable for pathfinding)
+    --   3 = door (depends on access: owner, public, color check)
+    -- ══════════════════════════════════════════════════════════════
+
     local function isTileWalkable(x, y)
-        local tileId = WorldManager.GetTile(x, y, 1)
+        local tileId, tileData = WorldManager.GetTile(x, y, 1)
         if not tileId then return true end
+
+        -- Saplings are always walkable
         if type(tileId) == "string" and tileId:sub(-8) == "_sapling" then
             return true
         end
+
+        -- Get item data for collision info
+        local baseId = tileId
+        if type(tileId) == "string" then
+            baseId = tileId:gsub("_sapling$", "")
+        end
+        local itemData = ItemsManager.ItemsData[baseId] or ItemsManager.ItemsData[tileId]
+        if not itemData or not itemData.Tile then return false end
+
+        local collision = itemData.Tile.Collision or 1
+
+        -- No collision
+        if collision == 0 then return true end
+
+        -- Platform (only blocks from below, walkable horizontally)
+        if collision == 2 then return true end
+
+        -- Door (check access)
+        if collision == 3 then
+            -- Door is open
+            if tileData and tileData.open then return true end
+
+            -- Check rendered tile color on layer 5 (lock_area overlay)
+            local rendered = WorldManager.GetRenderedTile(x, y, 5)
+            if rendered then
+                -- Red = no access (blocked)
+                if rendered.ImageColor3 == Color3.new(0.67451, 0, 0) then
+                    return false
+                end
+                -- Green or Yellow = has access (walkable)
+                return true
+            end
+
+            -- No render info — if WorldOwner exists, assume our world = walkable
+            if workspace:GetAttribute("WorldOwner") then
+                return true
+            end
+
+            return false
+        end
+
+        -- Collision 1 = solid (blocked)
         return false
     end
 
     -- ══════════════════════════════════════════════════════════════
-    -- A* PATHFINDING (unchanged logic, minor cleanup)
+    -- A* PATHFINDING
     -- ══════════════════════════════════════════════════════════════
 
     local function findPath(sx, sy, gx, gy)
-        -- If goal is blocked, find nearest walkable tile
         if not isTileWalkable(gx, gy) then
             local found = false
             for r = 1, 10 do
@@ -145,21 +191,15 @@ local function init(ctx)
     end
 
     -- ══════════════════════════════════════════════════════════════
-    -- FIX #2 & #3: Fly uses Heartbeat but ALSO overrides physics
-    -- 
-    -- Strategy: 
-    --   - Use Heartbeat for smooth visual movement (interpolation)
-    --   - After each frame, force Position & zero out velocity
-    --   - Set Grounded = true to prevent gravity accumulation
-    --   - Store a "fly position" separately so physics can't corrupt it
+    -- FLY MOVEMENT
     -- ══════════════════════════════════════════════════════════════
 
-    local flyPosition: Vector3? = nil  -- our authoritative position while flying
+    local flyPosition: Vector3? = nil
 
     local function startFly(tx, ty)
         if flyConn then flyConn:Disconnect() end
-        flyPath    = nil
-        flyIndex   = 0
+        flyPath     = nil
+        flyIndex    = 0
         flyPosition = nil
 
         local sx, sy = playerTile()
@@ -171,23 +211,22 @@ local function init(ctx)
             return
         end
 
-        flyPath  = path
-        flyIndex = 1
-        flyPosition = PM.Position  -- start from current actual position
+        flyPath     = path
+        flyIndex    = 1
+        flyPosition = PM.Position
 
         Fluent:Notify({ Title = "Fly", Content = `Jalur ditemukan: {#path} tile`, Duration = 2 })
 
         flyConn = RS.Heartbeat:Connect(function(dt)
             if not flyPath or flyIndex > #flyPath then
-                -- Arrived at destination
                 if flyPosition then
                     PM.Position    = flyPosition
                     PM.OldPosition = flyPosition
                 end
                 PM.VelocityX = 0
                 PM.VelocityY = 0
-                flyPath     = nil
-                flyPosition = nil
+                flyPath      = nil
+                flyPosition  = nil
                 if flyConn then flyConn:Disconnect(); flyConn = nil end
                 Fluent:Notify({ Title = "Fly", Content = "Sampai tujuan!", Duration = 3 })
                 if Options.FlyToggle then Options.FlyToggle:SetValue(false) end
@@ -200,25 +239,18 @@ local function init(ctx)
             local dist   = diff.Magnitude
 
             if dist < 0.3 then
-                -- Snap to waypoint and advance
                 flyPosition = target
                 flyIndex   += 1
             else
-                -- Move towards waypoint
-                local step   = math.min(FLY_SPEED, dist)
-                flyPosition  = flyPosition + diff.Unit * step
+                local step  = math.min(FLY_SPEED, dist)
+                flyPosition = flyPosition + diff.Unit * step
             end
 
-            -- ══════════════════════════════════════════
-            -- CRITICAL: Override physics every frame
-            -- This must happen AFTER PhysicsUpdate would
-            -- have modified Position/Velocity
-            -- ══════════════════════════════════════════
             PM.Position    = flyPosition
-            PM.OldPosition = flyPosition  -- prevents lerp drift
-            PM.VelocityX   = 0            -- kill horizontal momentum
-            PM.VelocityY   = 0            -- kill gravity accumulation
-            PM.Grounded    = true          -- prevents gravity from applying (-0.4/tick)
+            PM.OldPosition = flyPosition
+            PM.VelocityX   = 0
+            PM.VelocityY   = 0
+            PM.Grounded    = true
         end)
     end
 
@@ -230,7 +262,6 @@ local function init(ctx)
             flyConn:Disconnect()
             flyConn = nil
         end
-        -- Release grounded so normal physics resumes
         PM.Grounded = false
     end
 
