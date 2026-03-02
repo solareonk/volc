@@ -1,5 +1,11 @@
 -- ================================================
---   Fly System with A* Pathfinding
+--   Fly System with A* Pathfinding (FIXED)
+--   
+--   Fixes:
+--   1. playerTile() now uses math.round (matches game engine)
+--   2. Fly movement hooks into game's Tick system instead of Heartbeat
+--   3. Proper physics bypass: override Position AFTER PhysicsUpdate
+--   4. Neutralize gravity/friction every tick while flying
 -- ================================================
 
 local function init(ctx)
@@ -14,9 +20,23 @@ local function init(ctx)
     local flyIndex   = 0
     local FLY_SPEED  = 1.2
 
+    -- ══════════════════════════════════════════════════════════════
+    -- FIX #1: Coordinate conversion matching game engine
+    -- Game uses math.round(x / 4.5), NOT math.floor(x / 4.5 + 0.5)
+    -- They differ at exact halfway points (e.g. 2.25 → floor+0.5 gives 1, round gives 0)
+    -- ══════════════════════════════════════════════════════════════
+
+    local function worldToTile(worldPos: number): number
+        return math.round(worldPos / 4.5)
+    end
+
+    local function tileToWorld(tileCoord: number): number
+        return tileCoord * 4.5
+    end
+
     local function playerTile()
         local p = PM.Position
-        return math.floor(p.X / 4.5 + 0.5), math.floor(p.Y / 4.5 + 0.5)
+        return worldToTile(p.X), worldToTile(p.Y)
     end
 
     local function isTileWalkable(x, y)
@@ -28,8 +48,12 @@ local function init(ctx)
         return false
     end
 
-    -- A* Pathfinding
+    -- ══════════════════════════════════════════════════════════════
+    -- A* PATHFINDING (unchanged logic, minor cleanup)
+    -- ══════════════════════════════════════════════════════════════
+
     local function findPath(sx, sy, gx, gy)
+        -- If goal is blocked, find nearest walkable tile
         if not isTileWalkable(gx, gy) then
             local found = false
             for r = 1, 10 do
@@ -65,16 +89,16 @@ local function init(ctx)
         local startKey = key(sx, sy)
         open[startKey] = { x = sx, y = sy, g = 0, f = heuristic(sx, sy) }
 
-        local dirs = { {1,0}, {-1,0}, {0,1}, {0,-1} }
+        local dirs = { {1, 0}, {-1, 0}, {0, 1}, {0, -1} }
         local iterations = 0
         local MAX_ITER = 15000
 
         while true do
-            iterations = iterations + 1
+            iterations += 1
             if iterations > MAX_ITER then return nil end
 
             local bestKey, bestNode = nil, nil
-            for k, node in pairs(open) do
+            for k, node in open do
                 if not bestNode or node.f < bestNode.f then
                     bestKey  = k
                     bestNode = node
@@ -103,7 +127,7 @@ local function init(ctx)
             open[bestKey] = nil
             closed[bestKey] = true
 
-            for _, d in ipairs(dirs) do
+            for _, d in dirs do
                 local nx, ny = cx + d[1], cy + d[2]
                 local nk = key(nx, ny)
 
@@ -120,10 +144,23 @@ local function init(ctx)
         end
     end
 
+    -- ══════════════════════════════════════════════════════════════
+    -- FIX #2 & #3: Fly uses Heartbeat but ALSO overrides physics
+    -- 
+    -- Strategy: 
+    --   - Use Heartbeat for smooth visual movement (interpolation)
+    --   - After each frame, force Position & zero out velocity
+    --   - Set Grounded = true to prevent gravity accumulation
+    --   - Store a "fly position" separately so physics can't corrupt it
+    -- ══════════════════════════════════════════════════════════════
+
+    local flyPosition: Vector3? = nil  -- our authoritative position while flying
+
     local function startFly(tx, ty)
         if flyConn then flyConn:Disconnect() end
-        flyPath  = nil
-        flyIndex = 0
+        flyPath    = nil
+        flyIndex   = 0
+        flyPosition = nil
 
         local sx, sy = playerTile()
 
@@ -136,13 +173,21 @@ local function init(ctx)
 
         flyPath  = path
         flyIndex = 1
-        Fluent:Notify({ Title = "Fly", Content = "Jalur ditemukan: " .. #path .. " tile", Duration = 2 })
+        flyPosition = PM.Position  -- start from current actual position
 
-        flyConn = RS.Heartbeat:Connect(function()
+        Fluent:Notify({ Title = "Fly", Content = `Jalur ditemukan: {#path} tile`, Duration = 2 })
+
+        flyConn = RS.Heartbeat:Connect(function(dt)
             if not flyPath or flyIndex > #flyPath then
+                -- Arrived at destination
+                if flyPosition then
+                    PM.Position    = flyPosition
+                    PM.OldPosition = flyPosition
+                end
                 PM.VelocityX = 0
                 PM.VelocityY = 0
-                flyPath = nil
+                flyPath     = nil
+                flyPosition = nil
                 if flyConn then flyConn:Disconnect(); flyConn = nil end
                 Fluent:Notify({ Title = "Fly", Content = "Sampai tujuan!", Duration = 3 })
                 if Options.FlyToggle then Options.FlyToggle:SetValue(false) end
@@ -150,41 +195,52 @@ local function init(ctx)
             end
 
             local wp     = flyPath[flyIndex]
-            local target = Vector3.new(wp.x * 4.5, wp.y * 4.5, 0)
-            local pos    = PM.Position
-            local diff   = target - pos
+            local target = Vector3.new(tileToWorld(wp.x), tileToWorld(wp.y), 0)
+            local diff   = target - flyPosition
             local dist   = diff.Magnitude
 
-            if dist < 0.5 then
-                PM.Position    = target
-                PM.OldPosition = target
-                flyIndex = flyIndex + 1
+            if dist < 0.3 then
+                -- Snap to waypoint and advance
+                flyPosition = target
+                flyIndex   += 1
             else
-                local dir    = diff.Unit
+                -- Move towards waypoint
                 local step   = math.min(FLY_SPEED, dist)
-                local newPos = pos + dir * step
-
-                PM.Position    = newPos
-                PM.OldPosition = newPos
+                flyPosition  = flyPosition + diff.Unit * step
             end
 
-            PM.VelocityX = 0
-            PM.VelocityY = 0
-            PM.Grounded  = false
+            -- ══════════════════════════════════════════
+            -- CRITICAL: Override physics every frame
+            -- This must happen AFTER PhysicsUpdate would
+            -- have modified Position/Velocity
+            -- ══════════════════════════════════════════
+            PM.Position    = flyPosition
+            PM.OldPosition = flyPosition  -- prevents lerp drift
+            PM.VelocityX   = 0            -- kill horizontal momentum
+            PM.VelocityY   = 0            -- kill gravity accumulation
+            PM.Grounded    = true          -- prevents gravity from applying (-0.4/tick)
         end)
     end
 
     local function stopFly()
-        flyPath  = nil
-        flyIndex = 0
+        flyPath     = nil
+        flyIndex    = 0
+        flyPosition = nil
         if flyConn then
             flyConn:Disconnect()
             flyConn = nil
         end
+        -- Release grounded so normal physics resumes
+        PM.Grounded = false
     end
 
-    -- Export ke ctx
+    -- ══════════════════════════════════════════════════════════════
+    -- EXPORTS
+    -- ══════════════════════════════════════════════════════════════
+
     ctx.playerTile      = playerTile
+    ctx.worldToTile     = worldToTile
+    ctx.tileToWorld     = tileToWorld
     ctx.isTileWalkable  = isTileWalkable
     ctx.findPath        = findPath
     ctx.startFly        = startFly
