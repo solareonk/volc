@@ -73,8 +73,8 @@ local function init(ctx)
                 if plr ~= LocalPlayer and plr.Character then
                     local root = plr.Character:FindFirstChild("HumanoidRootPart")
                     if root then
-                        local tx = math.floor(root.Position.X / 4.5 + 0.5)
-                        local ty = math.floor(root.Position.Y / 4.5 + 0.5)
+                        local tx = math.round(root.Position.X / 4.5)
+                        local ty = math.round(root.Position.Y / 4.5)
                         local dist = math.abs(tx - px) + math.abs(ty - py)
                         if dist < closestDist then
                             closestDist = dist
@@ -100,6 +100,49 @@ local function init(ctx)
     local collectActive = false
     local collectQueue  = {}
 
+    -- Snake zigzag sort: top to bottom, alternate L→R / R→L per row
+    local function snakeSort(items)
+        if #items == 0 then return items end
+
+        -- Group by Y (tile row)
+        local rows = {}
+        for _, item in ipairs(items) do
+            if not rows[item.y] then
+                rows[item.y] = {}
+            end
+            table.insert(rows[item.y], item)
+        end
+
+        -- Sort each row by X (left to right)
+        for _, row in pairs(rows) do
+            table.sort(row, function(a, b) return a.x < b.x end)
+        end
+
+        -- Sort Y values highest first (top to bottom)
+        local sortedYs = {}
+        for y in pairs(rows) do
+            table.insert(sortedYs, y)
+        end
+        table.sort(sortedYs, function(a, b) return a > b end)
+
+        -- Snake zigzag
+        local sorted = {}
+        for i, y in ipairs(sortedYs) do
+            local row = rows[y]
+            if i % 2 == 0 then
+                for j = #row, 1, -1 do
+                    table.insert(sorted, row[j])
+                end
+            else
+                for _, item in ipairs(row) do
+                    table.insert(sorted, item)
+                end
+            end
+        end
+
+        return sorted
+    end
+
     local function getUncollectedItems()
         local items = {}
         local gemsFolder = workspace:FindFirstChild("Gems")
@@ -109,8 +152,8 @@ local function init(ctx)
             for _, part in ipairs(gemsFolder:GetChildren()) do
                 if part:IsA("Part") and not part:GetAttribute("t") then
                     local wx, wy = part.Position.X, part.Position.Y
-                    local tx = math.floor(wx / 4.5 + 0.5)
-                    local ty = math.floor(wy / 4.5 + 0.5)
+                    local tx = math.round(wx / 4.5)
+                    local ty = math.round(wy / 4.5)
                     table.insert(items, { x = tx, y = ty, type = "Gem", part = part })
                 end
             end
@@ -120,8 +163,8 @@ local function init(ctx)
             for _, part in ipairs(dropsFolder:GetChildren()) do
                 if part:IsA("Part") and not part:GetAttribute("t") then
                     local wx, wy = part.Position.X, part.Position.Y
-                    local tx = math.floor(wx / 4.5 + 0.5)
-                    local ty = math.floor(wy / 4.5 + 0.5)
+                    local tx = math.round(wx / 4.5)
+                    local ty = math.round(wy / 4.5)
                     local id = part:GetAttribute("id") or "?"
                     local amount = part:GetAttribute("amount") or 1
                     table.insert(items, { x = tx, y = ty, type = id .. " x" .. amount, part = part })
@@ -129,17 +172,10 @@ local function init(ctx)
             end
         end
 
-        local px, py = playerTile()
-        table.sort(items, function(a, b)
-            local da = math.abs(a.x - px) + math.abs(a.y - py)
-            local db = math.abs(b.x - px) + math.abs(b.y - py)
-            return da < db
-        end)
-
-        return items
+        return snakeSort(items)
     end
 
-    -- Export getUncollectedItems ke ctx (dipakai PnB, Harvest)
+    -- Export getUncollectedItems ke ctx
     ctx.getUncollectedItems = getUncollectedItems
 
     local function collectNext()
@@ -149,8 +185,8 @@ local function init(ctx)
             local item = table.remove(collectQueue, 1)
             if item.part and item.part.Parent and not item.part:GetAttribute("t") then
                 local wx, wy = item.part.Position.X, item.part.Position.Y
-                local tx = math.floor(wx / 4.5 + 0.5)
-                local ty = math.floor(wy / 4.5 + 0.5)
+                local tx = math.round(wx / 4.5)
+                local ty = math.round(wy / 4.5)
 
                 startFly(tx, ty)
 
