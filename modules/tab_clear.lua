@@ -217,7 +217,6 @@ local function init(ctx)
             task.wait(0.2)
 
             local cleared = 0
-            local lastTile = { x = startX, y = startY }
 
             for _, tile in ipairs(tiles) do
                 if not clearActive then break end
@@ -231,42 +230,35 @@ local function init(ctx)
 
                 if not fg and not bg then continue end
 
-                -- Find adjacent walkable tile based on context:
-                -- Prefer: above first (cleared area), then direction we came from
-                local adjTile = nil
-                local candidates = {
-                    { x = tile.x, y = tile.y + 1 },         -- above (already cleared)
-                    { x = lastTile.x, y = lastTile.y },     -- where we just were
-                    { x = tile.x - 1, y = tile.y },         -- left
-                    { x = tile.x + 1, y = tile.y },         -- right
-                    { x = tile.x, y = tile.y - 1 },         -- below
-                }
-
-                for _, c in ipairs(candidates) do
-                    -- Don't stand on the tile we're about to punch
-                    if c.x == tile.x and c.y == tile.y then continue end
-                    if isTileWalkable(c.x, c.y) then
-                        adjTile = c
-                        break
-                    end
-                end
-
-                if not adjTile then continue end
-
-                reached = flyToAndWait(adjTile.x, adjTile.y)
-                if not clearActive then break end
-                if not reached then continue end
-
-                task.wait(0.05)
-
+                -- Punch from current position first (don't move yet)
+                -- RemoteFist works within range, no need to be exactly adjacent
                 clearPunchTile(tile.x, tile.y)
                 if not clearActive then break end
 
-                -- Move into cleared tile
+                -- After punching, if tile is now clear, fly into it
+                -- This keeps player following the snake path
                 if not WorldManager.GetTile(tile.x, tile.y, 1) then
-                    flyToAndWait(tile.x, tile.y)
+                    reached = flyToAndWait(tile.x, tile.y)
                     if not clearActive then break end
-                    lastTile = { x = tile.x, y = tile.y }
+                    task.wait(0.05)
+                else
+                    -- Tile didn't break (maybe protected), skip it
+                    -- Try to fly to tile above or around to continue path
+                    local skipped = false
+                    local skipCandidates = {
+                        { x = tile.x, y = tile.y + 1 },
+                        { x = tile.x + 1, y = tile.y },
+                        { x = tile.x - 1, y = tile.y },
+                    }
+                    for _, c in ipairs(skipCandidates) do
+                        if isTileWalkable(c.x, c.y) then
+                            reached = flyToAndWait(c.x, c.y)
+                            skipped = true
+                            break
+                        end
+                    end
+                    if not clearActive then break end
+                    if not skipped then continue end
                     task.wait(0.05)
                 end
 
