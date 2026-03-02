@@ -1,5 +1,5 @@
 -- ================================================
---   Tab Harvest — Auto Harvest Trees
+--   Tab Harvest — Auto Harvest Trees (DEBUG)
 -- ================================================
 
 local function init(ctx)
@@ -18,6 +18,25 @@ local function init(ctx)
 
     local harvestActive = false
     local harvestFilter = "All"
+
+    -- ══════════════════════════════════════════════════════════════
+    -- DEBUG LOG
+    -- ══════════════════════════════════════════════════════════════
+
+    local debugLog = {}
+
+    local function log(msg)
+        print(msg)
+        table.insert(debugLog, msg)
+    end
+
+    local function flushLog(filename)
+        if #debugLog > 0 then
+            pcall(function()
+                writefile(filename or "harvest_debug.txt", table.concat(debugLog, "\n"))
+            end)
+        end
+    end
 
     -- Scan WorldTiles untuk semua sapling (ready atau belum)
     local function scanAllSaplings()
@@ -54,8 +73,11 @@ local function init(ctx)
     -- Scan WorldTiles untuk sapling yang sudah ready
     -- Sorted snake zigzag: atas ke bawah, kiri↔kanan per row
     local function getReadySaplings()
+        debugLog = {}
         local now = workspace:GetServerTimeNow()
-        local rowSaplings = {} -- [y] = { {sapling}, ... }
+
+        -- Step 1: Collect ALL ready saplings into a flat list first
+        local allReady = {}
 
         for x, col in pairs(WorldTiles) do
             if type(col) == "table" then
@@ -72,10 +94,7 @@ local function init(ctx)
 
                             if harvestFilter == "All" or name == harvestFilter then
                                 if elapsed >= growTime then
-                                    if not rowSaplings[y] then
-                                        rowSaplings[y] = {}
-                                    end
-                                    table.insert(rowSaplings[y], {
+                                    table.insert(allReady, {
                                         x = x, y = y, name = name, tileId = tileId
                                     })
                                 end
@@ -86,33 +105,64 @@ local function init(ctx)
             end
         end
 
-        -- Sort each row by X (left to right)
-        for _, row in pairs(rowSaplings) do
-            table.sort(row, function(a, b) return a.x < b.x end)
+        log("[Harvest DEBUG] Total ready saplings found: " .. #allReady)
+
+        if #allReady == 0 then
+            flushLog("harvest_debug.txt")
+            return {}
         end
 
-        -- Get sorted Y values (highest first = top to bottom)
+        -- Step 2: Group by Y
+        local rowSaplings = {}
+        for _, sap in ipairs(allReady) do
+            if not rowSaplings[sap.y] then
+                rowSaplings[sap.y] = {}
+            end
+            table.insert(rowSaplings[sap.y], sap)
+        end
+
+        -- Step 3: Sort each row by X (left to right)
+        for y, row in pairs(rowSaplings) do
+            table.sort(row, function(a, b) return a.x < b.x end)
+            log("[Harvest DEBUG] Row Y=" .. y .. ": " .. #row .. " saplings, X range=" .. row[1].x .. ".." .. row[#row].x)
+        end
+
+        -- Step 4: Get sorted Y values (highest first = top to bottom)
         local sortedYs = {}
         for y in pairs(rowSaplings) do
             table.insert(sortedYs, y)
         end
         table.sort(sortedYs, function(a, b) return a > b end)
 
-        -- Snake zigzag: odd rows left→right, even rows right→left
+        log("[Harvest DEBUG] Sorted rows (top to bottom): " .. table.concat(sortedYs, ", "))
+
+        -- Step 5: Snake zigzag
         local saplings = {}
         for i, y in ipairs(sortedYs) do
             local row = rowSaplings[y]
+            local direction = (i % 2 == 1) and "L->R" or "R->L"
+            log("[Harvest DEBUG] Row #" .. i .. " Y=" .. y .. " direction=" .. direction)
+
             if i % 2 == 0 then
+                -- Even row: right → left
                 for j = #row, 1, -1 do
                     table.insert(saplings, row[j])
                 end
             else
+                -- Odd row: left → right
                 for _, sap in ipairs(row) do
                     table.insert(saplings, sap)
                 end
             end
         end
 
+        -- Debug: print final order
+        log("[Harvest DEBUG] === FINAL ORDER ===")
+        for i, sap in ipairs(saplings) do
+            log("[Harvest DEBUG] #" .. i .. ": (" .. sap.x .. ", " .. sap.y .. ") " .. sap.name)
+        end
+
+        flushLog("harvest_debug.txt")
         return saplings
     end
 
@@ -133,8 +183,10 @@ local function init(ctx)
 
                 Fluent:Notify({ Title = "Auto Harvest", Content = #saplings .. " tree ready!", Duration = 2 })
 
-                for _, sap in ipairs(saplings) do
+                for idx, sap in ipairs(saplings) do
                     if not harvestActive then break end
+
+                    print("[Harvest] #" .. idx .. " Flying to (" .. sap.x .. ", " .. sap.y .. ") " .. sap.name)
 
                     -- Fly to tree
                     startFly(sap.x, sap.y)
@@ -196,6 +248,16 @@ local function init(ctx)
             harvestDropdown:SetValues(list)
             harvestDropdown:SetValue("All")
             Fluent:Notify({ Title = "Harvest", Content = (#list - 1) .. " jenis tree ditemukan.", Duration = 2 })
+        end,
+    })
+
+    -- DEBUG: button to test sorting without harvesting
+    Tabs.Harvest:AddButton({
+        Title       = "DEBUG: Scan Order",
+        Description = "Print harvest order ke file (workspace/harvest_debug.txt)",
+        Callback    = function()
+            local saplings = getReadySaplings()
+            Fluent:Notify({ Title = "Debug", Content = #saplings .. " saplings. Check harvest_debug.txt", Duration = 5 })
         end,
     })
 
