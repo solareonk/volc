@@ -1,5 +1,8 @@
 -- ================================================
---   Tab Clear — Clear World
+--   Tab Clear — Clear World (FIXED)
+--
+--   Fix: Uses startFly/stopFly from fly module
+--   instead of separate clearFlyTo system.
 -- ================================================
 
 local function init(ctx)
@@ -7,196 +10,264 @@ local function init(ctx)
     local Fluent       = ctx.Fluent
     local Options      = ctx.Options
     local RS           = ctx.RS
-    local PM           = ctx.PM
     local WorldTiles   = ctx.WorldTiles
     local WorldManager = ctx.WorldManager
     local RemoteFist   = ctx.RemoteFist
 
-    local playerTile      = ctx.playerTile
-    local isTileWalkable  = ctx.isTileWalkable
-    local findPath        = ctx.findPath
+    local playerTile     = ctx.playerTile
+    local isTileWalkable = ctx.isTileWalkable
+    local startFly       = ctx.startFly
+    local stopFly        = ctx.stopFly
 
-    local clearActive  = false
-    local clearFlyConn = nil
+    local clearActive = false
 
-    -- Fly khusus clear (tanpa notifikasi, tanpa FlyToggle)
-    local function clearFlyTo(tx, ty)
-        if clearFlyConn then clearFlyConn:Disconnect(); clearFlyConn = nil end
+    -- ══════════════════════════════════════════════════════════════
+    -- FLY TO TILE — reuses fly module (same pattern as Plant/Harvest)
+    -- ══════════════════════════════════════════════════════════════
 
+    local function flyToAndWait(tx, ty)
         local sx, sy = playerTile()
-        if sx == tx and sy == ty then return end
+        if sx == tx and sy == ty then return true end
 
-        local path = findPath(sx, sy, tx, ty)
-        if not path or #path == 0 then return end
+        startFly(tx, ty)
 
-        local pathIndex = 1
-        local arrived = false
-        local FLY_SPEED = ctx.getFlySpeed()
-
-        clearFlyConn = RS.Heartbeat:Connect(function()
-            if not clearActive or pathIndex > #path then
-                PM.VelocityX = 0
-                PM.VelocityY = 0
-                arrived = true
-                if clearFlyConn then clearFlyConn:Disconnect(); clearFlyConn = nil end
-                return
+        local done = false
+        local checkConn
+        checkConn = RS.Heartbeat:Connect(function()
+            if not ctx.getFlyConn() then
+                checkConn:Disconnect()
+                done = true
             end
-
-            local wp = path[pathIndex]
-            local target = Vector3.new(wp.x * 4.5, wp.y * 4.5, 0)
-            local pos = PM.Position
-            local diff = target - pos
-            local dist = diff.Magnitude
-
-            if dist < 0.5 then
-                PM.Position = target
-                PM.OldPosition = target
-                pathIndex = pathIndex + 1
-            else
-                local dir = diff.Unit
-                local step = math.min(FLY_SPEED, dist)
-                local newPos = pos + dir * step
-                PM.Position = newPos
-                PM.OldPosition = newPos
-            end
-
-            PM.VelocityX = 0
-            PM.VelocityY = 0
-            PM.Grounded = false
         end)
 
-        while not arrived and clearActive do task.wait(0.1) end
+        local elapsed = 0
+        while not done and clearActive do
+            task.wait(0.1)
+            elapsed += 0.1
+            if elapsed > 30 then
+                if checkConn then checkConn:Disconnect() end
+                stopFly()
+                return false
+            end
+        end
+
+        return done and clearActive
     end
 
-    -- Punch tile sampai foreground & background hancur
+    -- ══════════════════════════════════════════════════════════════
+    -- PUNCH TILE — destroy foreground & background
+    -- ══════════════════════════════════════════════════════════════
+
     local function clearPunchTile(x, y)
         local maxHits = 10
+
+        -- Punch foreground (layer 1)
         local hits = 0
         while clearActive and WorldManager.GetTile(x, y, 1) do
             RemoteFist:FireServer(Vector2.new(x, y))
             task.wait(0.16)
-            hits = hits + 1
+            hits += 1
             if hits >= maxHits then break end
         end
+
+        -- Punch background (layer 2)
         hits = 0
         while clearActive and WorldManager.GetTile(x, y, 2) do
             RemoteFist:FireServer(Vector2.new(x, y))
             task.wait(0.16)
-            hits = hits + 1
+            hits += 1
             if hits >= maxHits then break end
         end
     end
+
+    -- ══════════════════════════════════════════════════════════════
+    -- TILE SCAN — collect all clearable tiles in snake order
+    -- ══════════════════════════════════════════════════════════════
+
+    local function getClearableTiles()
+        local minX, maxX = math.huge, -math.huge
+        local minY, maxY = math.huge, -math.huge
+
+        -- First pass: find bounds of clearable tiles
+        for x, col in pairs(WorldTiles) do
+            if type(col) == "table" then
+                for y in pairs(col) do
+                    if type(y) == "number" then
+                        local fg = WorldManager.GetTile(x, y, 1)
+                        local bg = WorldManager.GetTile(x, y, 2)
+
+                        -- Skip bedrock
+                        if fg and type(fg) == "string" and fg:lower():find("bedrock") then
+                            continue
+                        end
+
+                        if fg or bg then
+                            if x < minX then minX = x end
+                            if x > maxX then maxX = x end
+                            if y < minY then minY = y end
+                            if y > maxY then maxY = y end
+                        end
+                    end
+                end
+            end
+        end
+
+        if minX == math.huge then return {}, nil end
+
+        -- Second pass: collect tiles with content, grouped by row
+        local rowTiles = {}
+        for x = minX, maxX do
+            for y = minY, maxY do
+                local fg = WorldManager.GetTile(x, y, 1)
+                local bg = WorldManager.GetTile(x, y, 2)
+
+                if fg and type(fg) == "string" and fg:lower():find("bedrock") then
+                    continue
+                end
+
+                if fg or bg then
+                    if not rowTiles[y] then
+                        rowTiles[y] = {}
+                    end
+                    table.insert(rowTiles[y], { x = x, y = y })
+                end
+            end
+        end
+
+        -- Sort each row by X (left to right)
+        for _, row in pairs(rowTiles) do
+            table.sort(row, function(a, b) return a.x < b.x end)
+        end
+
+        -- Sort Y highest first (top to bottom)
+        local sortedYs = {}
+        for y in pairs(rowTiles) do
+            table.insert(sortedYs, y)
+        end
+        table.sort(sortedYs, function(a, b) return a > b end)
+
+        -- Snake zigzag
+        local tiles = {}
+        for i, y in ipairs(sortedYs) do
+            local row = rowTiles[y]
+            if i % 2 == 0 then
+                for j = #row, 1, -1 do
+                    table.insert(tiles, row[j])
+                end
+            else
+                for _, tile in ipairs(row) do
+                    table.insert(tiles, tile)
+                end
+            end
+        end
+
+        local bounds = { minX = minX, maxX = maxX, minY = minY, maxY = maxY }
+        return tiles, bounds
+    end
+
+    -- ══════════════════════════════════════════════════════════════
+    -- CLEAR LOOP
+    -- ══════════════════════════════════════════════════════════════
 
     local function startClear()
         clearActive = true
 
         task.spawn(function()
-            local minX, maxX = math.huge, -math.huge
-            local minY, maxY = math.huge, -math.huge
-            for x, col in pairs(WorldTiles) do
-                if type(col) == "table" then
-                    for y in pairs(col) do
-                        if type(y) == "number" then
-                            local fg = WorldManager.GetTile(x, y, 1)
-                            local bg = WorldManager.GetTile(x, y, 2)
-                            if fg or bg then
-                                if fg and type(fg) == "string" and fg:lower():find("bedrock") then
-                                    continue
-                                end
-                                if x < minX then minX = x end
-                                if x > maxX then maxX = x end
-                                if y < minY then minY = y end
-                                if y > maxY then maxY = y end
-                            end
-                        end
-                    end
-                end
-            end
+            local tiles, bounds = getClearableTiles()
 
-            if minX == math.huge then
+            if #tiles == 0 then
                 Fluent:Notify({ Title = "Clear World", Content = "Tidak ada tile di world!", Duration = 3 })
                 clearActive = false
                 if Options.ClearWorld then Options.ClearWorld:SetValue(false) end
                 return
             end
 
-            local totalCols = maxX - minX + 1
-            local totalRows = maxY - minY + 1
-            Fluent:Notify({ Title = "Clear World", Content = "Clearing " .. totalCols .. "x" .. totalRows .. " area\nY: " .. maxY .. "→" .. minY .. " | Start: (" .. minX .. ", " .. (maxY + 1) .. ")", Duration = 5 })
+            local totalCols = bounds.maxX - bounds.minX + 1
+            local totalRows = bounds.maxY - bounds.minY + 1
+            Fluent:Notify({
+                Title = "Clear World",
+                Content = "Clearing " .. #tiles .. " tiles (" .. totalCols .. "x" .. totalRows .. " area)",
+                Duration = 5,
+            })
 
-            clearFlyTo(minX, maxY + 1)
-            if not clearActive then return end
-            task.wait(0.2)
+            local cleared = 0
 
-            local goingRight = true
-
-            for y = maxY, minY, -1 do
+            for _, tile in ipairs(tiles) do
                 if not clearActive then break end
 
-                local startX, endX, stepX
-                if goingRight then
-                    startX, endX, stepX = minX, maxX, 1
-                else
-                    startX, endX, stepX = maxX, minX, -1
+                local fg = WorldManager.GetTile(tile.x, tile.y, 1)
+                local bg = WorldManager.GetTile(tile.x, tile.y, 2)
+
+                -- Skip bedrock (re-check in case world changed)
+                if fg and type(fg) == "string" and fg:lower():find("bedrock") then
+                    continue
                 end
 
-                for x = startX, endX, stepX do
+                -- Skip if already cleared
+                if not fg and not bg then continue end
+
+                -- Find adjacent walkable tile to stand on while punching
+                -- Priority: above > previous tile in snake direction > any adjacent
+                local adjTile = nil
+                local candidates = {
+                    { x = tile.x, y = tile.y + 1 },     -- above
+                    { x = tile.x - 1, y = tile.y },     -- left
+                    { x = tile.x + 1, y = tile.y },     -- right
+                    { x = tile.x, y = tile.y - 1 },     -- below
+                }
+
+                for _, c in ipairs(candidates) do
+                    if isTileWalkable(c.x, c.y) then
+                        adjTile = c
+                        break
+                    end
+                end
+
+                if not adjTile then
+                    -- Can't reach this tile, skip
+                    continue
+                end
+
+                -- Fly to adjacent tile
+                local reached = flyToAndWait(adjTile.x, adjTile.y)
+                if not clearActive then break end
+                if not reached then continue end
+
+                task.wait(0.05)
+
+                -- Punch the tile
+                clearPunchTile(tile.x, tile.y)
+                if not clearActive then break end
+
+                -- After clearing, move into the cleared tile if walkable
+                if not WorldManager.GetTile(tile.x, tile.y, 1) then
+                    flyToAndWait(tile.x, tile.y)
                     if not clearActive then break end
-
-                    local hasFg = WorldManager.GetTile(x, y, 1)
-                    local hasBg = WorldManager.GetTile(x, y, 2)
-
-                    if hasFg and type(hasFg) == "string" and hasFg:lower():find("bedrock") then
-                        continue
-                    end
-
-                    if hasFg or hasBg then
-                        local adjX, adjY
-                        if x == startX then
-                            adjX, adjY = x, y + 1
-                        else
-                            adjX, adjY = x - stepX, y
-                        end
-
-                        if not isTileWalkable(adjX, adjY) then
-                            adjX, adjY = x, y + 1
-                        end
-
-                        clearFlyTo(adjX, adjY)
-                        if not clearActive then break end
-                        task.wait(0.05)
-
-                        clearPunchTile(x, y)
-                        if not clearActive then break end
-
-                        if not WorldManager.GetTile(x, y, 1) then
-                            clearFlyTo(x, y)
-                            if not clearActive then break end
-                            task.wait(0.05)
-                        end
-                    end
+                    task.wait(0.05)
                 end
 
-                goingRight = not goingRight
+                cleared += 1
             end
 
             clearActive = false
-            if clearFlyConn then clearFlyConn:Disconnect(); clearFlyConn = nil end
+            stopFly()
             if Options.ClearWorld then Options.ClearWorld:SetValue(false) end
-            Fluent:Notify({ Title = "Clear World", Content = "Selesai!", Duration = 3 })
+            Fluent:Notify({ Title = "Clear World", Content = "Selesai! " .. cleared .. " tiles cleared.", Duration = 3 })
         end)
     end
 
     local function stopClear()
         clearActive = false
-        if clearFlyConn then clearFlyConn:Disconnect(); clearFlyConn = nil end
+        stopFly()
     end
 
-    -- --------- Clear UI ---------
+    -- ══════════════════════════════════════════════════════════════
+    -- CLEAR UI
+    -- ══════════════════════════════════════════════════════════════
 
     Tabs.Clear:AddParagraph({
         Title   = "Clear World",
-        Content = "Hancurkan semua block (foreground + background) di world.\nPola zigzag (snake) dari bawah ke atas.",
+        Content = "Hancurkan semua block (foreground + background) di world.\nPola snake zigzag dari atas ke bawah.\nBedrock di-skip otomatis.",
     })
 
     Tabs.Clear:AddToggle("ClearWorld", {
