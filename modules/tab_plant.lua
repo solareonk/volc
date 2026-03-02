@@ -76,7 +76,31 @@ local function init(ctx)
     end
 
     -- ══════════════════════════════════════════════════════════════
-    -- TILE SCAN — with DEBUG PRINTS
+    -- DEBUG LOG — writes to file via writefile
+    -- ══════════════════════════════════════════════════════════════
+
+    local debugLog = {}
+
+    local function log(msg)
+        print(msg)
+        table.insert(debugLog, msg)
+    end
+
+    local function flushLog()
+        if #debugLog > 0 then
+            local ok, err = pcall(function()
+                writefile("plant_debug.txt", table.concat(debugLog, "\n"))
+            end)
+            if ok then
+                print("[Plant DEBUG] Log saved to workspace/plant_debug.txt")
+            else
+                print("[Plant DEBUG] writefile failed: " .. tostring(err))
+            end
+        end
+    end
+
+    -- ══════════════════════════════════════════════════════════════
+    -- TILE SCAN — with DEBUG LOG
     -- ══════════════════════════════════════════════════════════════
 
     local function isSolidTile(x, y)
@@ -90,6 +114,7 @@ local function init(ctx)
 
     local function getPlantableTiles()
         local tiles = {}
+        debugLog = {}  -- reset log
 
         local minX, maxX = math.huge, -math.huge
         local minY, maxY = math.huge, -math.huge
@@ -108,8 +133,7 @@ local function init(ctx)
 
         if minX == math.huge then return tiles end
 
-        -- DEBUG: print world bounds
-        print("[Plant DEBUG] World bounds: X=" .. minX .. ".." .. maxX .. " Y=" .. minY .. ".." .. maxY)
+        log("[Plant DEBUG] World bounds: X=" .. minX .. ".." .. maxX .. " Y=" .. minY .. ".." .. maxY)
 
         local plantMaxY = maxY + 1
 
@@ -135,14 +159,15 @@ local function init(ctx)
             goingRight = not goingRight
         end
 
-        -- DEBUG: print first 10 tiles selected
-        print("[Plant DEBUG] Found " .. #tiles .. " plantable tiles")
-        for i = 1, math.min(10, #tiles) do
+        log("[Plant DEBUG] Found " .. #tiles .. " plantable tiles")
+        log("[Plant DEBUG] Player tile: " .. table.concat({playerTile()}, ", "))
+        for i = 1, math.min(20, #tiles) do
             local t = tiles[i]
             local below = WorldManager.GetTile(t.x, t.y - 1, 1)
-            print("[Plant DEBUG] Tile #" .. i .. ": (" .. t.x .. ", " .. t.y .. ") below=" .. tostring(below))
+            log("[Plant DEBUG] Tile #" .. i .. ": (" .. t.x .. ", " .. t.y .. ") below=" .. tostring(below))
         end
 
+        flushLog()
         return tiles
     end
 
